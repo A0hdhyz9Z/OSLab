@@ -1,54 +1,46 @@
-#![no_std]
-#![no_main]
-#![feature(panic_info_message)]
-#![feature(alloc_error_handler)]
+use buddy_system_allocator::LockedHeap;
+use crate::config::KERNEL_HEAP_SIZE;
 
-use core::arch::global_asm;
+#[global_allocator]
+static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
 
-extern crate alloc;
+static mut HEAP_SPACE: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
 
-#[macro_use]
-extern crate bitflags;
+pub fn init_heap() {
+    unsafe {
+        HEAP_ALLOCATOR
+            .lock()
+            .init(HEAP_SPACE.as_ptr() as usize, KERNEL_HEAP_SIZE);
+    }
+}
 
-#[macro_use]
-mod console;
-mod lang_items;
-mod sbi;
-mod syscall;
-mod trap;
-mod loader;
-mod config;
-mod task;
-mod timer;
-mod sync;
-mod mm;
+#[alloc_error_handler]
+pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
+    panic!("Heap allocation error, layout = {:?}", layout);
+}
 
-global_asm!(include_str!("entry.asm"));
-global_asm!(include_str!("link_app.S"));
-
-fn clear_bss() {
+#[allow(unused)]
+pub fn heap_test() {
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
     extern "C" {
         fn sbss();
         fn ebss();
     }
-    unsafe {
-        core::slice::from_raw_parts_mut(
-            sbss as usize as *mut u8,
-            ebss as usize - sbss as usize,
-        ).fill(0);
+    let bss_range = sbss as usize..ebss as usize;
+    let a = Box::new(5);
+    assert_eq!(*a, 5);
+    assert!(bss_range.contains(&(a.as_ref() as *const _ as usize)));
+    drop(a);
+    let mut v: Vec<usize> = Vec::new();
+    for i in 0..500 {
+        v.push(i);
     }
+    for i in 0..500 {
+        assert_eq!(v[i], i);
+    }
+    assert!(bss_range.contains(&(v.as_ptr() as usize)));
+    drop(v);
+    println!("heap_test passed!");
 }
 
-#[no_mangle]
-pub fn rust_main() -> ! {
-    clear_bss();
-    println!("[kernel] Hello, world!");
-    mm::init();
-    println!("[kernel] back to world!");
-    mm::remap_test();
-    trap::init();
-    trap::enable_timer_interrupt();
-    timer::set_next_trigger();
-    task::run_first_task();
-    panic!("Unreachable in rust_main!");
-}
